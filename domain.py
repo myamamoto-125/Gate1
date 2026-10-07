@@ -5,6 +5,9 @@ from pathlib import Path
 LABELS = {'NEW':'未対応','IN_PROGRESS':'対応中','PENDING':'保留','DONE':'完了'}
 TRANSITIONS = {'NEW':['IN_PROGRESS'],'IN_PROGRESS':['PENDING','DONE'],'PENDING':['IN_PROGRESS'],'DONE':['IN_PROGRESS']}
 MESSAGES = {
+ 'status_success':'ステータスを「{status}」に変更しました。',
+ 'assignee_success':'担当者を「{name}」に変更しました。',
+ 'unassigned_success':'担当者を未割り当てに戻しました。',
  'transition':'このステータスへは変更できません。画面を再読み込みしてください。',
  'permission':'この操作を行う権限がありません。',
  'done':'完了済みの問い合わせは担当者を変更できません。',
@@ -27,7 +30,7 @@ def change(db, inquiry_id, actor_id, payload):
  try:
   db.execute('BEGIN IMMEDIATE')
   actor=db.execute('SELECT * FROM users WHERE id=? AND is_active=1',(actor_id,)).fetchone()
-  if not actor: raise BusinessError('permission')
+  if not actor or actor['role'] not in ('ADMIN','MEMBER'): raise BusinessError('permission')
   row=db.execute('SELECT * FROM inquiries WHERE id=?',(inquiry_id,)).fetchone()
   if not row: raise BusinessError('missing')
   if payload.get('updated_at')!=row['updated_at']: raise BusinessError('conflict')
@@ -49,9 +52,10 @@ def change(db, inquiry_id, actor_id, payload):
    closed=now if target=='DONE' else None if row['status']=='DONE' else row['closed_at']
    db.execute('UPDATE inquiries SET status=?,assignee_id=?,closed_at=?,updated_at=? WHERE id=?',(target,assignee,closed,now,inquiry_id))
    history('status',row['status'],target)
-   message=f'ステータスを「{LABELS[target]}」に変更しました。'
+   message=MESSAGES['status_success'].format(status=LABELS[target])
   elif payload.get('field')=='assignee':
-   target=payload.get('value')
+   if 'value' not in payload: raise BusinessError('user')
+   target=payload['value']
    if row['status']=='DONE': raise BusinessError('done')
    if actor['role']=='MEMBER' and (row['assignee_id'] is not None or target!=actor_id): raise BusinessError('permission')
    if target is None:
@@ -66,7 +70,7 @@ def change(db, inquiry_id, actor_id, payload):
     raise BusinessError('permission')
    db.execute('UPDATE inquiries SET assignee_id=?,updated_at=? WHERE id=?',(target,now,inquiry_id))
    history('assignee',row['assignee_id'],target)
-   message=f'担当者を「{name}」に変更しました。' if name else '担当者を未割り当てに戻しました。'
+   message=MESSAGES['assignee_success'].format(name=name) if target is not None else MESSAGES['unassigned_success']
   else: raise BusinessError('permission')
   db.commit()
   return message

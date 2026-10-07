@@ -3,7 +3,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from http.cookies import SimpleCookie
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
-from domain import connect, initialize, change, BusinessError, TRANSITIONS
+from domain import connect, initialize, change, BusinessError, TRANSITIONS, MESSAGES
 
 ROOT=Path(__file__).parent
 READINGS=json.loads((ROOT/'static/name-readings.json').read_text())
@@ -38,13 +38,13 @@ class Handler(BaseHTTPRequestHandler):
    if not session: return self.response(401,{'message':'ログインしてください。'})
    with connect(DB_PATH) as db:
     actor=db.execute('SELECT * FROM users WHERE id=? AND is_active=1',(session['id'],)).fetchone()
-    if not actor: return self.response(403,{'message':'この操作を行う権限がありません。'})
+    if not actor: return self.response(403,{'message':MESSAGES['permission']})
     if path.path=='/api/me': return self.response(200,{'user':dict(actor),'csrf':session['csrf']})
     if path.path=='/api/inquiries': return self.response(200,[dict(r) for r in db.execute('SELECT i.*,u.name assignee_name FROM inquiries i LEFT JOIN users u ON u.id=i.assignee_id ORDER BY i.id')])
     if path.path=='/api/detail':
      raw=parse_qs(path.query).get('id',['1'])[0]
      row=db.execute('SELECT i.*,u.name assignee_name FROM inquiries i LEFT JOIN users u ON u.id=i.assignee_id WHERE i.id=?',(raw,)).fetchone()
-     if not row: return self.response(404,{'message':'指定された問い合わせは存在しません。'})
+     if not row: return self.response(404,{'message':MESSAGES['missing']})
      histories=[dict(r) for r in db.execute('SELECT h.*,u.name actor_name,o.name old_name,n.name new_name FROM inquiry_histories h JOIN users u ON u.id=h.changed_by LEFT JOIN users o ON h.field_name=\'assignee\' AND o.id=h.old_value LEFT JOIN users n ON h.field_name=\'assignee\' AND n.id=h.new_value WHERE inquiry_id=? ORDER BY h.changed_at DESC,h.id DESC LIMIT 20',(raw,))]
      return self.response(200,{'inquiry':dict(row),'users':[dict(r,reading=READINGS.get(r['name'],r['name'])) for r in db.execute('SELECT id,name FROM users WHERE is_active=1')],'histories':histories,'transitions':TRANSITIONS[row['status']]})
    return self.response(404,{'message':'ページが見つかりません。'})
@@ -70,12 +70,12 @@ class Handler(BaseHTTPRequestHandler):
    return self.response(200,{'ok':True},{'Set-Cookie':f'inquiry_session={token}; HttpOnly; SameSite=Strict; Path=/'+('; Secure' if os.environ.get('COOKIE_SECURE')=='1' else '')})
   session=self.session()
   if not session: return self.response(401,{'message':'ログインしてください。'})
-  if not hmac.compare_digest(self.headers.get('X-CSRF-Token',''),session['csrf']): return self.response(403,{'message':'この操作を行う権限がありません。'})
+  if not hmac.compare_digest(self.headers.get('X-CSRF-Token',''),session['csrf']): return self.response(403,{'message':MESSAGES['permission']})
   if self.path=='/api/change':
    try:
     with connect(DB_PATH) as db: message=change(db,data.get('id'),session['id'],data)
     return self.response(200,{'message':message})
-   except BusinessError as e: return self.response(409 if e.key=='conflict' else 404 if e.key=='missing' else 400,{'message':str(e)})
+   except BusinessError as e: return self.response(403 if e.key=='permission' else 409 if e.key=='conflict' else 404 if e.key=='missing' else 400,{'message':str(e)})
    except sqlite3.Error: return self.response(500,{'message':'変更を保存できませんでした。時間をおいて再度お試しください。'})
   return self.response(404,{'message':'ページが見つかりません。'})
 
